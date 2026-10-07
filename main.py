@@ -16,6 +16,8 @@ import sqlite3
 from datetime import datetime
 from db import Database
 from algorithms import formatear_desglose, generar_reporte_background
+import complejidad_espacial
+import algoritmos_paralelos
 
 APP_TITLE = "Mi Tienda - Ventas, Almacén y Caja (T2)"
 
@@ -878,8 +880,20 @@ class StoreApp(tk.Tk):
             'Algoritmos del curso',
             'Voraz · Divide y vencerás · Recursividad · Programación dinámica · Monte Carlo · Paralelismo'
         )
-        body = ttk.Frame(self.content, style='Card.TFrame', padding=20)
-        body.pack(fill='both', expand=True)
+        outer = ttk.Frame(self.content, style='Card.TFrame')
+        outer.pack(fill='both', expand=True)
+        canvas = tk.Canvas(outer, bg='white', highlightthickness=0)
+        scroll = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        body = ttk.Frame(canvas, style='Card.TFrame', padding=20)
+        win = canvas.create_window((0, 0), window=body, anchor='nw')
+        body.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda e: canvas.itemconfigure(win, width=e.width))
+        canvas.bind('<Enter>', lambda e: canvas.bind_all(
+            '<MouseWheel>', lambda ev: canvas.yview_scroll(int(-ev.delta / 120), 'units')))
+        canvas.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'))
 
         # --- Voraz ---
         ttk.Label(body, text='1. Algoritmo voraz – Desglose de vuelto',
@@ -936,7 +950,57 @@ class StoreApp(tk.Tk):
                    command=self._run_recursion).pack(anchor='w', pady=(4, 6))
         self.rec_result = ttk.Label(body, text='', background='white', foreground='#276749',
                                     wraplength=900, justify='left')
-        self.rec_result.pack(anchor='w')
+        self.rec_result.pack(anchor='w', pady=(0, 16))
+
+        # --- Complejidad espacial ---
+        ttk.Label(body, text='5. Complejidad espacial – Memoria estática vs dinámica',
+                  background='white', font=('Segoe UI', 12, 'bold')).pack(anchor='w')
+        ttk.Label(
+            body,
+            text='Mide la memoria del carrito y del inventario. Estática O(1), dinámica O(n + k).',
+            background='white', foreground='#607089'
+        ).pack(anchor='w', pady=(2, 6))
+        ttk.Button(body, text='Analizar memoria',
+                   command=self._run_espacial).pack(anchor='w', pady=(0, 6))
+        self.esp_result = ttk.Label(body, text='', background='white', foreground='#276749',
+                                    wraplength=900, justify='left')
+        self.esp_result.pack(anchor='w', pady=(0, 16))
+
+        # --- Algoritmos paralelos ---
+        ttk.Label(body, text='6. Algoritmos paralelos – Speed-up, eficiencia y overhead',
+                  background='white', font=('Segoe UI', 12, 'bold')).pack(anchor='w')
+        ttk.Label(
+            body,
+            text='Compara el reporte del panel en versión secuencial vs 2 hilos. S = t(n)/t(n,p), E = S/p.',
+            background='white', foreground='#607089'
+        ).pack(anchor='w', pady=(2, 6))
+        ttk.Button(body, text='Ejecutar benchmark paralelo',
+                   command=self._run_paralelo).pack(anchor='w', pady=(0, 6))
+        self.par_result = ttk.Label(body, text='', background='white', foreground='#276749',
+                                    wraplength=900, justify='left')
+        self.par_result.pack(anchor='w')
+
+    def _run_espacial(self):
+        try:
+            rep = complejidad_espacial.reporte_completo(self.cart, self.db.list_products())
+            est, din = rep['estatica'], rep['dinamica']
+            texto = (
+                f"Estática: {est['total_bytes']} bytes ({est['total_kb']} KB) — O(1)\n"
+                f"Carrito: {din['carrito']['items']} ítem(s), {din['carrito']['kb']} KB — {din['carrito']['complejidad']}\n"
+                f"Inventario: {din['inventario']['productos']} producto(s), {din['inventario']['kb']} KB — {din['inventario']['complejidad']}\n"
+                f"Caché de búsqueda binaria: {din['cache_busqueda_binaria']['kb']} KB — {din['cache_busqueda_binaria']['complejidad']}\n"
+                f"Dinámica total: {din['total_kb']} KB — {din['complejidad_total']}"
+            )
+            self.esp_result.config(text=texto)
+        except Exception as e:
+            self.esp_result.config(text=f"Error: {e}")
+
+    def _run_paralelo(self):
+        try:
+            m = algoritmos_paralelos.ejecutar_benchmark_paralelo(self.db, None)
+            self.par_result.config(text="\n".join(m.notas))
+        except Exception as e:
+            self.par_result.config(text=f"Error: {e}")
 
     def _run_voraz(self):
         try:

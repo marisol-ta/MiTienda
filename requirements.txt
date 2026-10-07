@@ -1,0 +1,5 @@
+# La aplicación usa solo librerías estándar de Python.
+# Para pruebas:
+#   python -m unittest tests.test_algorithms -v
+# PyInstaller solo es necesario para generar el .exe:
+pyinstaller>=6.0

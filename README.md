@@ -141,3 +141,12 @@ Repositorio Git inicializado con commits lógicos:
 - [x] Control de versiones (Git)
 - [x] Informe (este README + PDF técnico)
 - [x] Pruebas unitarias (`tests/`)
+
+---
+
+## Complejidad espacial y algoritmos paralelos
+
+- `complejidad_espacial.py`: mide la memoria estática O(1) y dinámica O(n + k) (carrito e inventario) y describe la jerarquía de memoria.
+- `algoritmos_paralelos.py`: speed-up, eficiencia, overhead, granularidad e isoeficiencia; el benchmark compara el reporte del panel en secuencial vs 2 hilos.
+- Ambos se ejecutan desde la pestaña **Algoritmos** (secciones 5 y 6).
+- Pruebas: `python -m unittest tests.test_complejidad_paralelo`

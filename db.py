@@ -8,6 +8,8 @@ Análisis de complejidad de las funciones principales (notación O grande):
   - create_sale            : O(k log n)  — k ítems × búsquedas por clave
   - add_selected_to_cart   : O(k)        — búsqueda lineal en carrito (UI)
   - dashboard              : O(n)        — COUNT / SUM sobre productos
+  - create_purchase        : O(k log n)  — k ítems × actualización por PK
+  - void_sale              : O(k log n)  — reversa de k ítems de la venta
   - binary_search (alg)    : O(log n)    — búsqueda binaria en memoria
   - desglosar_vuelto       : O(1)        — d denominaciones constantes
   - optimal_restock (DP)   : O(n · W)    — mochila 0/1
@@ -108,7 +110,45 @@ class Database:
                 note TEXT DEFAULT '',
                 FOREIGN KEY(product_id) REFERENCES products(id)
             );
+
+            CREATE TABLE IF NOT EXISTS purchases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                purchase_number TEXT NOT NULL UNIQUE,
+                date TEXT NOT NULL,
+                supplier TEXT NOT NULL DEFAULT '',
+                total REAL NOT NULL,
+                payment_method TEXT NOT NULL DEFAULT 'EFECTIVO',
+                note TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS purchase_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                purchase_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                quantity REAL NOT NULL,
+                unit_cost REAL NOT NULL,
+                line_total REAL NOT NULL,
+                FOREIGN KEY(purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
+                FOREIGN KEY(product_id) REFERENCES products(id)
+            );
             ''')
+            self._migrate(con)
+
+    @staticmethod
+    def _columns(con, table):
+        return {r['name'] for r in con.execute(f"PRAGMA table_info({table})")}
+
+    def _migrate(self, con):
+        """Agrega columnas nuevas a bases creadas con versiones anteriores."""
+        cols = self._columns(con, 'sales')
+        if 'status' not in cols:
+            con.execute("ALTER TABLE sales ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVA'")
+        if 'voided_at' not in cols:
+            con.execute("ALTER TABLE sales ADD COLUMN voided_at TEXT")
+        if 'void_reason' not in cols:
+            con.execute("ALTER TABLE sales ADD COLUMN void_reason TEXT DEFAULT ''")
+        if 'purchase_id' not in self._columns(con, 'cash_movements'):
+            con.execute("ALTER TABLE cash_movements ADD COLUMN purchase_id INTEGER")
 
     def _invalidate_cache(self):
         self._cache_dirty = True
@@ -315,6 +355,145 @@ class Database:
                 (today + '%',)
             ).fetchall()
 
+    def list_sales(self, limit: int = 200):
+        """Ventas recientes (activas y anuladas), de la más nueva a la más antigua."""
+        with self.connect() as con:
+            return con.execute(
+                "SELECT * FROM sales ORDER BY id DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+
+    def get_sale_items(self, sale_id: int):
+        with self.connect() as con:
+            return con.execute('''
+                SELECT si.*, p.name, p.code
+                FROM sale_items si JOIN products p ON p.id = si.product_id
+                WHERE si.sale_id = ?
+            ''', (sale_id,)).fetchall()
+
+    def void_sale(self, sale_id: int, reason: str):
+        """
+        Anula una venta (transacción atómica). Complejidad: O(k log n).
+          - Marca la venta como ANULADA con motivo y fecha (no se borra: queda el historial).
+          - Devuelve al stock las cantidades vendidas y registra una ENTRADA por ítem.
+          - Registra un EGRESO en caja que revierte el ingreso de la venta.
+        Una venta ya anulada no puede anularse otra vez.
+        """
+        reason = (reason or '').strip()
+        if not reason:
+            raise ValueError("Indica el motivo de la anulación")
+        dt = self.now()
+        with self.connect() as con:
+            sale = con.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+            if not sale:
+                raise ValueError("La venta no existe")
+            if sale['status'] == 'ANULADA':
+                raise ValueError(f"La venta {sale['sale_number']} ya está anulada")
+            items = con.execute(
+                "SELECT product_id, quantity FROM sale_items WHERE sale_id=?", (sale_id,)
+            ).fetchall()
+            con.execute(
+                "UPDATE sales SET status='ANULADA', voided_at=?, void_reason=? WHERE id=?",
+                (dt, reason, sale_id)
+            )
+            for it in items:
+                con.execute(
+                    "UPDATE products SET stock=stock+? WHERE id=?",
+                    (it['quantity'], it['product_id'])
+                )
+                con.execute(
+                    "INSERT INTO stock_movements(date,product_id,type,quantity,note) VALUES(?,?,?,?,?)",
+                    (dt, it['product_id'], 'ENTRADA', it['quantity'],
+                     f"Anulación {sale['sale_number']}")
+                )
+            con.execute(
+                "INSERT INTO cash_movements(date,type,concept,amount,payment_method,sale_id) VALUES(?,?,?,?,?,?)",
+                (dt, 'EGRESO', f"Anulación {sale['sale_number']}", sale['total'],
+                 sale['payment_method'], sale_id)
+            )
+        self._invalidate_cache()
+        return {'sale_number': sale['sale_number'], 'total': sale['total'], 'items': len(items)}
+
+    # ------------------------------------------------------------------
+    # PURCHASES (compras a proveedores: aumentan el stock)
+    # ------------------------------------------------------------------
+    def next_purchase_number(self) -> str:
+        today = datetime.now().strftime('%Y%m%d')
+        with self.connect() as con:
+            n = con.execute(
+                "SELECT COUNT(*) n FROM purchases WHERE purchase_number LIKE ?",
+                (f"C{today}-%",)
+            ).fetchone()['n'] + 1
+        return f"C{today}-{n:04d}"
+
+    def create_purchase(self, items: List[Dict], supplier: str = '',
+                        payment_method: str = 'EFECTIVO', register_cash: bool = True,
+                        note: str = ''):
+        """
+        Registra una compra (transacción atómica). Complejidad: O(k log n).
+        items: [{'product_id', 'quantity', 'cost'}]
+          - Suma la cantidad comprada al stock y registra una ENTRADA por ítem.
+          - Actualiza el precio de compra del producto con el último costo pagado.
+          - Si register_cash=True, registra un EGRESO en caja por el total.
+        """
+        if not items:
+            raise ValueError("La compra no tiene productos")
+        clean = []
+        for it in items:
+            qty = float(it['quantity'])
+            cost = float(it['cost'])
+            if qty <= 0:
+                raise ValueError("La cantidad debe ser mayor que cero")
+            if cost < 0:
+                raise ValueError("El costo no puede ser negativo")
+            clean.append((int(it['product_id']), qty, cost))
+        total = round(sum(q * c for _, q, c in clean), 2)
+        number = self.next_purchase_number()
+        dt = self.now()
+        supplier = (supplier or '').strip()
+
+        with self.connect() as con:
+            for pid, _, _ in clean:
+                if not con.execute(
+                    "SELECT 1 FROM products WHERE id=? AND active=1", (pid,)
+                ).fetchone():
+                    raise ValueError("Uno de los productos ya no está disponible")
+            cur = con.execute(
+                "INSERT INTO purchases(purchase_number,date,supplier,total,payment_method,note) "
+                "VALUES(?,?,?,?,?,?)",
+                (number, dt, supplier, total, payment_method, note)
+            )
+            purchase_id = cur.lastrowid
+            for pid, qty, cost in clean:
+                con.execute(
+                    "INSERT INTO purchase_items(purchase_id,product_id,quantity,unit_cost,line_total) "
+                    "VALUES(?,?,?,?,?)",
+                    (purchase_id, pid, qty, cost, round(qty * cost, 2))
+                )
+                con.execute(
+                    "UPDATE products SET stock=stock+?, purchase_price=? WHERE id=?",
+                    (qty, cost, pid)
+                )
+                con.execute(
+                    "INSERT INTO stock_movements(date,product_id,type,quantity,note) VALUES(?,?,?,?,?)",
+                    (dt, pid, 'ENTRADA', qty, f"Compra {number}")
+                )
+            if register_cash and total > 0:
+                concept = f"Compra {number}" + (f" · {supplier}" if supplier else "")
+                con.execute(
+                    "INSERT INTO cash_movements(date,type,concept,amount,payment_method,purchase_id) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (dt, 'EGRESO', concept, total, payment_method, purchase_id)
+                )
+        self._invalidate_cache()
+        return {'purchase_id': purchase_id, 'number': number, 'total': total,
+                'items': len(clean), 'date': dt}
+
+    def list_purchases(self, limit: int = 200):
+        with self.connect() as con:
+            return con.execute(
+                "SELECT * FROM purchases ORDER BY id DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+
     # ------------------------------------------------------------------
     # CASH
     # ------------------------------------------------------------------
@@ -348,7 +527,8 @@ class Database:
                 FROM cash_movements WHERE date LIKE ?
             ''', (today + '%',)).fetchone()
             sales_count = con.execute(
-                "SELECT COUNT(*) n FROM sales WHERE date LIKE ?", (today + '%',)
+                "SELECT COUNT(*) n FROM sales WHERE date LIKE ? AND status='ACTIVA'",
+                (today + '%',)
             ).fetchone()['n']
         return dict(r) | {
             'sales_count': sales_count,
@@ -372,11 +552,11 @@ class Database:
                 "SELECT COALESCE(SUM(stock*purchase_price),0) v FROM products WHERE active=1"
             ).fetchone()['v']
             sales_total = con.execute(
-                "SELECT COALESCE(SUM(total),0) v FROM sales WHERE date LIKE ?",
+                "SELECT COALESCE(SUM(total),0) v FROM sales WHERE date LIKE ? AND status='ACTIVA'",
                 (today + '%',)
             ).fetchone()['v']
             sales_count = con.execute(
-                "SELECT COUNT(*) n FROM sales WHERE date LIKE ?",
+                "SELECT COUNT(*) n FROM sales WHERE date LIKE ? AND status='ACTIVA'",
                 (today + '%',)
             ).fetchone()['n']
         return {

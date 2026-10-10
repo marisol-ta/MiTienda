@@ -31,6 +31,7 @@ class StoreApp(tk.Tk):
         self.minsize(1050, 650)
         self.configure(bg="#eef2f7")
         self.cart = []          # lista de diccionarios (estructura de datos semana 1)
+        self.purchase_cart = []  # ítems de la compra en curso (módulo Compras)
         self.selected_product_id = None
         self._style()
         self._layout()
@@ -69,6 +70,7 @@ class StoreApp(tk.Tk):
             ('📊  Inicio', self.show_dashboard),
             ('🧾  Ventas', self.show_sales),
             ('📦  Almacén', self.show_warehouse),
+            ('🚚  Compras', self.show_purchases),
             ('💵  Caja', self.show_cash),
             ('🧠  Algoritmos', self.show_algorithms),
         ]:
@@ -217,6 +219,8 @@ class StoreApp(tk.Tk):
         ttk.Entry(addrow, textvariable=self.sale_qty, width=8).pack(side='left', padx=8)
         ttk.Button(addrow, text='Agregar al carrito', style='Primary.TButton',
                    command=self.add_selected_to_cart).pack(side='left')
+        ttk.Button(addrow, text='Historial / Anular venta',
+                   command=self.sales_history_dialog).pack(side='right')
 
         ttk.Label(right, text='Carrito', background='white',
                   font=('Segoe UI', 14, 'bold')).pack(anchor='w')
@@ -416,6 +420,7 @@ class StoreApp(tk.Tk):
 
         # Limpiar carrito y refrescar
         self.cart = []
+        self.purchase_cart = []
         self.received.set('')
         self.refresh_sale_products()
         self.refresh_cart()
@@ -786,6 +791,258 @@ class StoreApp(tk.Tk):
 
         ttk.Button(f, text='Registrar movimiento', style='Primary.TButton',
                    command=save).pack(fill='x')
+
+    # ------------------------------------------------------------------
+    # COMPRAS (aumentan el stock)
+    # ------------------------------------------------------------------
+    def show_purchases(self):
+        self.clear()
+        self.header('Compras', 'Registra la mercadería que ingresa: aumenta el stock y el egreso de caja.')
+        pan = ttk.Panedwindow(self.content, orient='horizontal')
+        pan.pack(fill='both', expand=True)
+        left = ttk.Frame(pan, style='Card.TFrame', padding=14)
+        right = ttk.Frame(pan, style='Card.TFrame', padding=14)
+        pan.add(left, weight=3)
+        pan.add(right, weight=2)
+
+        searchrow = ttk.Frame(left, style='Card.TFrame')
+        searchrow.pack(fill='x')
+        ttk.Label(searchrow, text='Buscar:', background='white').pack(side='left')
+        self.pur_search = tk.StringVar()
+        e = ttk.Entry(searchrow, textvariable=self.pur_search)
+        e.pack(side='left', fill='x', expand=True, padx=8)
+        e.bind('<KeyRelease>', lambda _: self.refresh_purchase_products())
+        ttk.Button(searchrow, text='Historial de compras',
+                   command=self.purchases_history_dialog).pack(side='left')
+
+        cols = ('codigo', 'producto', 'stock', 'costo')
+        self.pur_tree = ttk.Treeview(left, columns=cols, show='headings', height=16)
+        for c, t, w in [
+            ('codigo', 'Código', 90), ('producto', 'Producto', 260),
+            ('stock', 'Stock', 75), ('costo', 'Últ. costo', 90)
+        ]:
+            self.pur_tree.heading(c, text=t)
+            self.pur_tree.column(c, width=w, anchor='center' if c != 'producto' else 'w')
+        self.pur_tree.pack(fill='both', expand=True, pady=12)
+        self.pur_tree.bind('<Double-1>', lambda _: self.add_to_purchase())
+        self.pur_tree.bind('<<TreeviewSelect>>', lambda _: self._fill_purchase_cost())
+
+        addrow = ttk.Frame(left, style='Card.TFrame')
+        addrow.pack(fill='x')
+        ttk.Label(addrow, text='Cantidad:', background='white').pack(side='left')
+        self.pur_qty = tk.StringVar(value='1')
+        ttk.Entry(addrow, textvariable=self.pur_qty, width=8).pack(side='left', padx=8)
+        ttk.Label(addrow, text='Costo unit. S/:', background='white').pack(side='left')
+        self.pur_cost = tk.StringVar()
+        ttk.Entry(addrow, textvariable=self.pur_cost, width=9).pack(side='left', padx=8)
+        ttk.Button(addrow, text='Agregar a la compra', style='Primary.TButton',
+                   command=self.add_to_purchase).pack(side='left')
+
+        ttk.Label(right, text='Compra', background='white',
+                  font=('Segoe UI', 14, 'bold')).pack(anchor='w')
+
+        bottom = ttk.Frame(right, style='Card.TFrame')
+        bottom.pack(side='bottom', fill='x')
+        ttk.Button(bottom, text='REGISTRAR COMPRA', style='Primary.TButton',
+                   command=self.complete_purchase).pack(fill='x', pady=(8, 0))
+        form = ttk.Frame(bottom, style='Card.TFrame')
+        form.pack(fill='x', pady=(8, 0))
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text='Proveedor:', background='white').grid(row=0, column=0, sticky='w', pady=3)
+        self.pur_supplier = tk.StringVar()
+        ttk.Entry(form, textvariable=self.pur_supplier).grid(row=0, column=1, sticky='ew', padx=(8, 0))
+        ttk.Label(form, text='Pago:', background='white').grid(row=1, column=0, sticky='w', pady=3)
+        self.pur_method = tk.StringVar(value='EFECTIVO')
+        ttk.Combobox(
+            form, textvariable=self.pur_method,
+            values=['EFECTIVO', 'YAPE/PLIN', 'TARJETA', 'TRANSFERENCIA'], state='readonly'
+        ).grid(row=1, column=1, sticky='ew', padx=(8, 0))
+        self.pur_cash = tk.BooleanVar(value=True)
+        ttk.Checkbutton(form, text='Registrar egreso en caja', variable=self.pur_cash).grid(
+            row=2, column=0, columnspan=2, sticky='w', pady=3)
+        self.pur_total_label = ttk.Label(bottom, text='TOTAL: S/ 0.00', background='white',
+                                         font=('Segoe UI', 18, 'bold'))
+        self.pur_total_label.pack(anchor='e', pady=(4, 0))
+        ttk.Separator(bottom).pack(fill='x', pady=6)
+
+        cols = ('producto', 'cant', 'costo', 'total')
+        self.pur_cart_tree = ttk.Treeview(right, columns=cols, show='headings', height=8)
+        for c, t, w in [
+            ('producto', 'Producto', 190), ('cant', 'Cant.', 65),
+            ('costo', 'Costo', 75), ('total', 'Total', 80)
+        ]:
+            self.pur_cart_tree.heading(c, text=t)
+            self.pur_cart_tree.column(c, width=w, anchor='center' if c != 'producto' else 'w')
+        self.pur_cart_tree.pack(fill='both', expand=True, pady=(6, 4))
+        ttk.Button(right, text='Quitar seleccionado',
+                   command=self.remove_purchase_item).pack(anchor='e')
+
+        self.refresh_purchase_products()
+        self.refresh_purchase_cart()
+
+    def refresh_purchase_products(self):
+        for x in self.pur_tree.get_children():
+            self.pur_tree.delete(x)
+        for r in self.db.list_products(self.pur_search.get()):
+            self.pur_tree.insert(
+                '', 'end', iid=str(r['id']),
+                values=(r['code'], r['name'], f"{r['stock']:g}", self.money(r['purchase_price']))
+            )
+
+    def _fill_purchase_cost(self):
+        sel = self.pur_tree.selection()
+        if sel:
+            p = self.db.get_product(int(sel[0]))
+            self.pur_cost.set(f"{float(p['purchase_price']):.2f}")
+
+    def add_to_purchase(self):
+        sel = self.pur_tree.selection()
+        if not sel:
+            return messagebox.showwarning('Compras', 'Selecciona un producto.')
+        try:
+            qty = float(self.pur_qty.get())
+            cost = float(self.pur_cost.get())
+        except ValueError:
+            return messagebox.showerror('Compras', 'Ingresa una cantidad y un costo válidos.')
+        if qty <= 0:
+            return messagebox.showerror('Compras', 'La cantidad debe ser mayor que cero.')
+        if cost < 0:
+            return messagebox.showerror('Compras', 'El costo no puede ser negativo.')
+        p = self.db.get_product(int(sel[0]))
+        self.purchase_cart.append(
+            {'product_id': p['id'], 'name': p['name'], 'quantity': qty, 'cost': cost}
+        )
+        self.pur_qty.set('1')
+        self.refresh_purchase_cart()
+
+    def refresh_purchase_cart(self):
+        for x in self.pur_cart_tree.get_children():
+            self.pur_cart_tree.delete(x)
+        total = 0
+        for i, it in enumerate(self.purchase_cart):
+            lt = it['quantity'] * it['cost']
+            total += lt
+            self.pur_cart_tree.insert(
+                '', 'end', iid=str(i),
+                values=(it['name'], f"{it['quantity']:g}", self.money(it['cost']), self.money(lt))
+            )
+        self.pur_total_label.config(text=f"TOTAL: {self.money(total)}")
+
+    def remove_purchase_item(self):
+        sel = self.pur_cart_tree.selection()
+        if sel:
+            self.purchase_cart.pop(int(sel[0]))
+            self.refresh_purchase_cart()
+
+    def complete_purchase(self):
+        if not self.purchase_cart:
+            return messagebox.showwarning('Compras', 'Agrega al menos un producto a la compra.')
+        try:
+            r = self.db.create_purchase(
+                self.purchase_cart, self.pur_supplier.get(), self.pur_method.get(),
+                self.pur_cash.get()
+            )
+        except Exception as e:
+            return messagebox.showerror('No se pudo registrar', str(e))
+        self.purchase_cart = []
+        self.pur_supplier.set('')
+        self.refresh_purchase_products()
+        self.refresh_purchase_cart()
+        messagebox.showinfo(
+            'Compra registrada',
+            f"{r['number']}\nTotal: {self.money(r['total'])}\nEl stock fue actualizado."
+        )
+
+    def purchases_history_dialog(self):
+        w = tk.Toplevel(self)
+        w.title('Historial de compras')
+        w.geometry('760x420')
+        w.transient(self)
+        f = ttk.Frame(w, padding=16)
+        f.pack(fill='both', expand=True)
+        cols = ('numero', 'fecha', 'proveedor', 'pago', 'total')
+        tree = ttk.Treeview(f, columns=cols, show='headings')
+        for c, t, wd in [
+            ('numero', 'N.º', 120), ('fecha', 'Fecha / hora', 150),
+            ('proveedor', 'Proveedor', 200), ('pago', 'Pago', 110), ('total', 'Total', 100)
+        ]:
+            tree.heading(c, text=t)
+            tree.column(c, width=wd, anchor='center' if c != 'proveedor' else 'w')
+        tree.pack(fill='both', expand=True)
+        for r in self.db.list_purchases():
+            tree.insert('', 'end', values=(
+                r['purchase_number'], r['date'], r['supplier'] or '—',
+                r['payment_method'], self.money(r['total'])
+            ))
+
+    # ------------------------------------------------------------------
+    # HISTORIAL DE VENTAS Y ANULACIÓN
+    # ------------------------------------------------------------------
+    def sales_history_dialog(self):
+        w = tk.Toplevel(self)
+        w.title('Historial de ventas')
+        w.geometry('860x470')
+        w.transient(self)
+        f = ttk.Frame(w, padding=16)
+        f.pack(fill='both', expand=True)
+
+        bar = ttk.Frame(f)
+        bar.pack(side='bottom', fill='x', pady=(10, 0))
+        cols = ('numero', 'fecha', 'pago', 'total', 'estado', 'motivo')
+        tree = ttk.Treeview(f, columns=cols, show='headings')
+        for c, t, wd in [
+            ('numero', 'N.º', 130), ('fecha', 'Fecha / hora', 140), ('pago', 'Pago', 110),
+            ('total', 'Total', 90), ('estado', 'Estado', 80), ('motivo', 'Motivo de anulación', 230)
+        ]:
+            tree.heading(c, text=t)
+            tree.column(c, width=wd, anchor='center' if c != 'motivo' else 'w')
+        tree.tag_configure('anulada', foreground='#9aa5b5')
+        tree.pack(fill='both', expand=True)
+
+        def load():
+            for x in tree.get_children():
+                tree.delete(x)
+            for r in self.db.list_sales():
+                anulada = r['status'] == 'ANULADA'
+                tree.insert(
+                    '', 'end', iid=str(r['id']), tags=('anulada',) if anulada else (),
+                    values=(r['sale_number'], r['date'], r['payment_method'],
+                            self.money(r['total']), r['status'], r['void_reason'] or '')
+                )
+
+        def anular():
+            sel = tree.selection()
+            if not sel:
+                return messagebox.showwarning('Anular venta', 'Selecciona una venta.', parent=w)
+            sale_id = int(sel[0])
+            row = tree.item(sel[0])['values']
+            if row[4] == 'ANULADA':
+                return messagebox.showinfo('Anular venta', 'Esa venta ya está anulada.', parent=w)
+            reason = simpledialog.askstring(
+                'Anular venta', f'Motivo de la anulación de {row[0]}:', parent=w)
+            if reason is None:
+                return
+            if not messagebox.askyesno(
+                'Confirmar',
+                f'¿Anular la venta {row[0]} por {row[3]}?\n'
+                'Se devolverá el stock y se registrará un egreso en caja.', parent=w
+            ):
+                return
+            try:
+                self.db.void_sale(sale_id, reason)
+            except Exception as e:
+                return messagebox.showerror('Anular venta', str(e), parent=w)
+            load()
+            try:
+                self.refresh_sale_products()
+            except tk.TclError:
+                pass  # la pantalla de ventas ya no está abierta
+            messagebox.showinfo('Anular venta', 'Venta anulada. El stock fue restituido.', parent=w)
+
+        ttk.Button(bar, text='Anular venta seleccionada', style='Primary.TButton',
+                   command=anular).pack(side='left')
+        ttk.Button(bar, text='Cerrar', command=w.destroy).pack(side='right')
+        load()
 
     # ------------------------------------------------------------------
     # CASH

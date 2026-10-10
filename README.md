@@ -150,3 +150,12 @@ Repositorio Git inicializado con commits lógicos:
 - `algoritmos_paralelos.py`: speed-up, eficiencia, overhead, granularidad e isoeficiencia; el benchmark compara el reporte del panel en secuencial vs 2 hilos.
 - Ambos se ejecutan desde la pestaña **Algoritmos** (secciones 5 y 6).
 - Pruebas: `python -m unittest tests.test_complejidad_paralelo`
+
+---
+
+## Compras y anulación de ventas
+
+- **Compras** (menú lateral): registra la mercadería que ingresa. Cada compra suma la cantidad al stock, deja una `ENTRADA` en el historial de movimientos, actualiza el precio de compra con el último costo pagado y, si se deja marcada la opción, registra un `EGRESO` en caja. Incluye historial de compras.
+- **Anular venta** (Ventas → *Historial / Anular venta*): exige un motivo, devuelve el stock de cada ítem, revierte el ingreso con un `EGRESO` en caja y marca la venta como `ANULADA` (no se borra, queda trazabilidad). Las ventas anuladas no cuentan en el panel ni en el resumen de caja, y una venta no puede anularse dos veces.
+- Las bases `tienda.db` creadas con versiones anteriores se actualizan solas al abrir la aplicación.
+- Pruebas: `python -m unittest tests.test_compras_anulacion`

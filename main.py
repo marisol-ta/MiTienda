@@ -202,7 +202,7 @@ class StoreApp(tk.Tk):
                    command=self.binary_search_dialog).pack(side='left', padx=(6, 0))
 
         cols = ('codigo', 'producto', 'stock', 'precio')
-        self.sale_tree = ttk.Treeview(left, columns=cols, show='headings', height=16)
+        self.sale_tree = ttk.Treeview(left, columns=cols, show='headings', height=12)
         for c, t, w in [
             ('codigo', 'Código', 90), ('producto', 'Producto', 260),
             ('stock', 'Stock', 75), ('precio', 'Precio', 90)
@@ -219,8 +219,8 @@ class StoreApp(tk.Tk):
         ttk.Entry(addrow, textvariable=self.sale_qty, width=8).pack(side='left', padx=8)
         ttk.Button(addrow, text='Agregar al carrito', style='Primary.TButton',
                    command=self.add_selected_to_cart).pack(side='left')
-        ttk.Button(addrow, text='Historial / Anular venta',
-                   command=self.sales_history_dialog).pack(side='right')
+        ttk.Button(left, text='Historial / Anular venta',
+                   command=self.sales_history_dialog).pack(anchor='w', pady=(10, 0))
 
         ttk.Label(right, text='Carrito', background='white',
                   font=('Segoe UI', 14, 'bold')).pack(anchor='w')
@@ -816,13 +816,14 @@ class StoreApp(tk.Tk):
                    command=self.purchases_history_dialog).pack(side='left')
 
         cols = ('codigo', 'producto', 'stock', 'costo')
-        self.pur_tree = ttk.Treeview(left, columns=cols, show='headings', height=16)
+        self.pur_tree = ttk.Treeview(left, columns=cols, show='headings', height=12)
         for c, t, w in [
-            ('codigo', 'Código', 90), ('producto', 'Producto', 260),
-            ('stock', 'Stock', 75), ('costo', 'Últ. costo', 90)
+            ('codigo', 'Código', 75), ('producto', 'Producto', 190),
+            ('stock', 'Stock', 60), ('costo', 'Últ. costo', 85)
         ]:
             self.pur_tree.heading(c, text=t)
-            self.pur_tree.column(c, width=w, anchor='center' if c != 'producto' else 'w')
+            self.pur_tree.column(c, width=w, anchor='center' if c != 'producto' else 'w',
+                                 stretch=(c == 'producto'))
         self.pur_tree.pack(fill='both', expand=True, pady=12)
         self.pur_tree.bind('<Double-1>', lambda _: self.add_to_purchase())
         self.pur_tree.bind('<<TreeviewSelect>>', lambda _: self._fill_purchase_cost())
@@ -835,8 +836,8 @@ class StoreApp(tk.Tk):
         ttk.Label(addrow, text='Costo unit. S/:', background='white').pack(side='left')
         self.pur_cost = tk.StringVar()
         ttk.Entry(addrow, textvariable=self.pur_cost, width=9).pack(side='left', padx=8)
-        ttk.Button(addrow, text='Agregar a la compra', style='Primary.TButton',
-                   command=self.add_to_purchase).pack(side='left')
+        ttk.Button(left, text='Agregar a la compra', style='Primary.TButton',
+                   command=self.add_to_purchase).pack(anchor='w', pady=(10, 0))
 
         ttk.Label(right, text='Compra', background='white',
                   font=('Segoe UI', 14, 'bold')).pack(anchor='w')

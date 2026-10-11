@@ -201,8 +201,26 @@ class StoreApp(tk.Tk):
         ttk.Button(searchrow, text='Buscar por código (binaria)',
                    command=self.binary_search_dialog).pack(side='left', padx=(6, 0))
 
+        # --- Zona inferior fija del panel izquierdo (siempre visible) ---
+        # Se empaqueta ANTES de la tabla para que, al achicar o agrandar la
+        # ventana, sea la tabla la que ceda espacio y no estos botones.
+        left_bottom = ttk.Frame(left, style='Card.TFrame')
+        left_bottom.pack(side='bottom', fill='x')
+
+        addrow = ttk.Frame(left_bottom, style='Card.TFrame')
+        addrow.pack(fill='x')
+        ttk.Label(addrow, text='Cantidad:', background='white').pack(side='left')
+        self.sale_qty = tk.DoubleVar(value=1)
+        ttk.Entry(addrow, textvariable=self.sale_qty, width=8).pack(side='left', padx=8)
+        ttk.Button(addrow, text='Agregar al carrito', style='Primary.TButton',
+                   command=self.add_selected_to_cart).pack(side='left')
+
+        ttk.Button(left_bottom, text='Historial / Anular venta',
+                   style='Primary.TButton',
+                   command=self.sales_history_dialog).pack(fill='x', pady=(8, 0))
+
         cols = ('codigo', 'producto', 'stock', 'precio')
-        self.sale_tree = ttk.Treeview(left, columns=cols, show='headings', height=16)
+        self.sale_tree = ttk.Treeview(left, columns=cols, show='headings', height=8)
         for c, t, w in [
             ('codigo', 'Código', 90), ('producto', 'Producto', 260),
             ('stock', 'Stock', 75), ('precio', 'Precio', 90)
@@ -211,16 +229,6 @@ class StoreApp(tk.Tk):
             self.sale_tree.column(c, width=w, anchor='center' if c != 'producto' else 'w')
         self.sale_tree.pack(fill='both', expand=True, pady=12)
         self.sale_tree.bind('<Double-1>', lambda _: self.add_selected_to_cart())
-
-        addrow = ttk.Frame(left, style='Card.TFrame')
-        addrow.pack(fill='x')
-        ttk.Label(addrow, text='Cantidad:', background='white').pack(side='left')
-        self.sale_qty = tk.DoubleVar(value=1)
-        ttk.Entry(addrow, textvariable=self.sale_qty, width=8).pack(side='left', padx=8)
-        ttk.Button(addrow, text='Agregar al carrito', style='Primary.TButton',
-                   command=self.add_selected_to_cart).pack(side='left')
-        ttk.Button(addrow, text='Historial / Anular venta',
-                   command=self.sales_history_dialog).pack(side='right')
 
         ttk.Label(right, text='Carrito', background='white',
                   font=('Segoe UI', 14, 'bold')).pack(anchor='w')

@@ -146,6 +146,7 @@ class Database:
                 expiry_date TEXT DEFAULT '',
                 description TEXT DEFAULT '',
                 customer TEXT DEFAULT '',
+                sale_id INTEGER,
                 status TEXT NOT NULL DEFAULT 'PENDIENTE',
                 resolution TEXT NOT NULL DEFAULT '',
                 evaluation_notes TEXT DEFAULT '',
@@ -183,6 +184,8 @@ class Database:
             con.execute("ALTER TABLE sales ADD COLUMN void_reason TEXT DEFAULT ''")
         if 'purchase_id' not in self._columns(con, 'cash_movements'):
             con.execute("ALTER TABLE cash_movements ADD COLUMN purchase_id INTEGER")
+        if 'sale_id' not in self._columns(con, 'returns'):
+            con.execute("ALTER TABLE returns ADD COLUMN sale_id INTEGER")
 
     def _invalidate_cache(self):
         self._cache_dirty = True
@@ -617,10 +620,13 @@ class Database:
 
     def register_return(self, product_id: int, quantity, reason: str,
                         expiry_date: str = '', description: str = '',
-                        customer: str = ''):
+                        customer: str = '', sale_id: Optional[int] = None):
         """
         PASO 1 del protocolo: recepción. Deja la devolución PENDIENTE.
         No modifica el stock: el producto queda en revisión hasta evaluarlo.
+        Si se indica sale_id (boleta), el producto debe figurar en esa venta, la
+        cantidad no puede superar lo vendido (menos lo ya devuelto) y el crédito
+        usa el precio realmente pagado en la boleta.
         """
         qty = float(quantity)
         if qty <= 0:
@@ -640,21 +646,60 @@ class Database:
         p = self.get_product(product_id)
         if not p or not p['active']:
             raise ValueError("Producto no encontrado")
+        unit_price = float(p['sale_price'])
+        if sale_id:
+            line = next((i for i in self.sale_items_for_return(sale_id)
+                         if i['product_id'] == product_id), None)
+            if line is None:
+                raise ValueError("Ese producto no figura en la boleta seleccionada")
+            if qty > line['available'] + 1e-9:
+                raise ValueError(
+                    f"Solo se puede devolver hasta {line['available']:g} "
+                    f"(vendido {line['quantity']:g}, ya devuelto/en revisión "
+                    f"{line['returned']:g})")
+            unit_price = float(line['unit_price'])
         number = self.next_return_number()
         with self.connect() as con:
             cur = con.execute(
                 """INSERT INTO returns(return_number,date,product_id,quantity,unit_price,
-                   reason,expiry_date,description,customer,credit_amount)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (number, self.now(), product_id, qty, p['sale_price'], reason,
+                   reason,expiry_date,description,customer,sale_id,credit_amount)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (number, self.now(), product_id, qty, unit_price, reason,
                  expiry_date, (description or '').strip(), (customer or '').strip(),
-                 round(qty * float(p['sale_price']), 2))
+                 sale_id or None, round(qty * unit_price, 2))
             )
         return {'id': cur.lastrowid, 'number': number}
 
+    def sale_items_for_return(self, sale_id: int):
+        """
+        Productos de una boleta con cuánto se vendió, cuánto ya se devolvió
+        (devoluciones PENDIENTES o APROBADAS) y cuánto queda por devolver.
+        """
+        with self.connect() as con:
+            sale = con.execute("SELECT status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            if not sale:
+                raise ValueError("La boleta no existe")
+            if sale['status'] == 'ANULADA':
+                raise ValueError("La boleta está anulada; no admite devoluciones")
+            rows = con.execute(
+                "SELECT si.product_id, si.quantity, si.unit_price, si.line_total, "
+                "p.name, p.code, "
+                "COALESCE((SELECT SUM(r.quantity) FROM returns r WHERE r.sale_id=si.sale_id "
+                "AND r.product_id=si.product_id AND r.status<>'RECHAZADA'),0) AS returned "
+                "FROM sale_items si JOIN products p ON p.id=si.product_id "
+                "WHERE si.sale_id=?", (sale_id,)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d['available'] = max(0.0, float(r['quantity']) - float(r['returned']))
+            out.append(d)
+        return out
+
     def list_returns(self, status: str = '', limit: int = 300):
-        q = ("SELECT r.*, p.name AS product_name, p.code AS product_code "
-             "FROM returns r JOIN products p ON p.id = r.product_id")
+        q = ("SELECT r.*, p.name AS product_name, p.code AS product_code, "
+             "s.sale_number AS sale_number "
+             "FROM returns r JOIN products p ON p.id = r.product_id "
+             "LEFT JOIN sales s ON s.id = r.sale_id")
         args = []
         if status:
             q += ' WHERE r.status=?'
@@ -668,8 +713,11 @@ class Database:
         with self.connect() as con:
             return con.execute(
                 "SELECT r.*, p.name AS product_name, p.code AS product_code, "
-                "p.category AS product_category "
+                "p.category AS product_category, s.sale_number AS sale_number, "
+                "s.date AS sale_date, s.total AS sale_total, "
+                "s.payment_method AS sale_payment "
                 "FROM returns r JOIN products p ON p.id = r.product_id "
+                "LEFT JOIN sales s ON s.id = r.sale_id "
                 "WHERE r.id=?", (return_id,)
             ).fetchone()
 

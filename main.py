@@ -55,6 +55,7 @@ class StoreApp(tk.Tk):
                      font=('Segoe UI', 20, 'bold'))
         st.configure('TLabel', font=('Segoe UI', 10))
         st.configure('Card.TCheckbutton', background='white')
+        st.configure('Mini.Treeview', rowheight=22, font=('Segoe UI', 9))
         st.configure('Card.TRadiobutton', background='white')
         st.configure('TButton', font=('Segoe UI', 10), padding=(11, 8))
         st.configure('Primary.TButton', font=('Segoe UI', 10, 'bold'), padding=(12, 9))
@@ -1112,36 +1113,75 @@ class StoreApp(tk.Tk):
                    command=self._register_return).pack(side='bottom', fill='x', pady=(10, 0))
         form = ttk.Frame(left, style='Card.TFrame')
         form.pack(side='bottom', fill='x', pady=(8, 0))
-        form.columnconfigure(1, weight=1)
+        form.columnconfigure(3, weight=1)
         self.ret_qty = tk.StringVar(value='1')
         self.ret_reason = tk.StringVar(value='VENCIMIENTO')
         self.ret_expiry = tk.StringVar()
         self.ret_customer = tk.StringVar()
         ttk.Label(form, text='Cantidad:', background='white').grid(row=0, column=0, sticky='w', pady=3)
-        ttk.Entry(form, textvariable=self.ret_qty, width=10).grid(row=0, column=1, sticky='w', padx=(8, 0))
-        ttk.Label(form, text='Motivo:', background='white').grid(row=1, column=0, sticky='w', pady=3)
-        cb = ttk.Combobox(form, textvariable=self.ret_reason, state='readonly',
-                          values=list(self.db.RETURN_REASONS))
-        cb.grid(row=1, column=1, sticky='ew', padx=(8, 0))
-        ttk.Label(form, text='Vencimiento:', background='white').grid(row=2, column=0, sticky='w', pady=3)
-        ttk.Entry(form, textvariable=self.ret_expiry).grid(row=2, column=1, sticky='ew', padx=(8, 0))
-        ttk.Label(form, text='Formato AAAA-MM-DD', background='white',
-                  foreground='#607089', font=('Segoe UI', 8)).grid(row=3, column=1, sticky='w', padx=(8, 0))
-        ttk.Label(form, text='Cliente:', background='white').grid(row=4, column=0, sticky='w', pady=3)
-        ttk.Entry(form, textvariable=self.ret_customer).grid(row=4, column=1, sticky='ew', padx=(8, 0))
-        ttk.Label(form, text='Descripción:', background='white').grid(row=5, column=0, sticky='nw', pady=3)
-        self.ret_desc = tk.Text(form, height=3, width=20, font=('Segoe UI', 9), wrap='word')
-        self.ret_desc.grid(row=5, column=1, sticky='ew', padx=(8, 0), pady=3)
+        ttk.Entry(form, textvariable=self.ret_qty, width=6).grid(row=0, column=1, sticky='w', padx=(6, 10))
+        ttk.Label(form, text='Motivo:', background='white').grid(row=0, column=2, sticky='w')
+        ttk.Combobox(form, textvariable=self.ret_reason, state='readonly', width=11,
+                     values=list(self.db.RETURN_REASONS)).grid(row=0, column=3, sticky='ew', padx=(6, 0))
+        ttk.Label(form, text='Vence (AAAA-MM-DD):', background='white').grid(
+            row=1, column=0, columnspan=3, sticky='w', pady=3)
+        ttk.Entry(form, textvariable=self.ret_expiry, width=12).grid(
+            row=1, column=3, sticky='ew', padx=(6, 0))
+        ttk.Label(form, text='Cliente:', background='white').grid(row=2, column=0, sticky='w', pady=3)
+        ttk.Entry(form, textvariable=self.ret_customer).grid(
+            row=2, column=1, columnspan=3, sticky='ew', padx=(6, 0))
+        ttk.Label(form, text='Descripción:', background='white').grid(row=3, column=0, sticky='nw', pady=3)
+        self.ret_desc = tk.Text(form, height=2, width=20, font=('Segoe UI', 9), wrap='word')
+        self.ret_desc.grid(row=3, column=1, columnspan=3, sticky='ew', padx=(6, 0), pady=3)
 
-        sr = ttk.Frame(left, style='Card.TFrame')
-        sr.pack(fill='x', pady=(10, 0))
+        nb = ttk.Notebook(left)
+        nb.pack(fill='both', expand=True, pady=(10, 0))
+        self.ret_nb = nb
+
+        # --- Pestaña 1: con boleta (se ve qué productos se entregaron) ---
+        t1 = ttk.Frame(nb, style='Card.TFrame', padding=6)
+        nb.add(t1, text='Con boleta')
+        s1 = ttk.Frame(t1, style='Card.TFrame')
+        s1.pack(fill='x')
+        ttk.Label(s1, text='Boleta N.º:', background='white').pack(side='left')
+        self.ret_sale_search = tk.StringVar()
+        es = ttk.Entry(s1, textvariable=self.ret_sale_search)
+        es.pack(side='left', fill='x', expand=True, padx=6)
+        es.bind('<KeyRelease>', lambda _: self._refresh_return_sales())
+        self.ret_sale_tree = ttk.Treeview(
+            t1, columns=('numero', 'fecha', 'total'), show='headings', height=2,
+            style='Mini.Treeview')
+        for c, t, w_ in [('numero', 'Boleta', 120), ('fecha', 'Fecha', 125), ('total', 'Total', 70)]:
+            self.ret_sale_tree.heading(c, text=t)
+            self.ret_sale_tree.column(c, width=w_, anchor='center')
+        self.ret_sale_tree.pack(fill='x', pady=(6, 0))
+        self.ret_sale_tree.bind('<<TreeviewSelect>>', lambda _: self._load_return_sale_items())
+        ttk.Label(t1, text='Productos de la boleta (elige el devuelto):',
+                  background='white', foreground='#607089',
+                  font=('Segoe UI', 8)).pack(anchor='w', pady=(6, 0))
+        self.ret_item_tree = ttk.Treeview(
+            t1, columns=('producto', 'vend', 'disp', 'precio'), show='headings', height=3,
+            style='Mini.Treeview')
+        for c, t, w_ in [('producto', 'Producto', 150), ('vend', 'Vend.', 45),
+                         ('disp', 'Disp.', 45), ('precio', 'P. pagado', 70)]:
+            self.ret_item_tree.heading(c, text=t)
+            self.ret_item_tree.column(c, width=w_, anchor='w' if c == 'producto' else 'center')
+        self.ret_item_tree.tag_configure('agotado', foreground='#9aa5b5')
+        self.ret_item_tree.pack(fill='both', expand=True, pady=(2, 0))
+
+        # --- Pestaña 2: sin boleta (cliente sin comprobante) ---
+        t2 = ttk.Frame(nb, style='Card.TFrame', padding=6)
+        nb.add(t2, text='Sin boleta')
+        sr = ttk.Frame(t2, style='Card.TFrame')
+        sr.pack(fill='x')
         ttk.Label(sr, text='Buscar producto:', background='white').pack(side='left')
         self.ret_search = tk.StringVar()
         e = ttk.Entry(sr, textvariable=self.ret_search)
         e.pack(side='left', fill='x', expand=True, padx=8)
         e.bind('<KeyRelease>', lambda _: self._refresh_return_products())
         cols = ('codigo', 'producto', 'stock', 'precio')
-        self.ret_prod_tree = ttk.Treeview(left, columns=cols, show='headings', height=5)
+        self.ret_prod_tree = ttk.Treeview(t2, columns=cols, show='headings', height=5,
+                                          style='Mini.Treeview')
         for c, t, w_ in [('codigo', 'Código', 60), ('producto', 'Producto', 150),
                          ('stock', 'Stock', 45), ('precio', 'Precio', 65)]:
             self.ret_prod_tree.heading(c, text=t)
@@ -1166,11 +1206,11 @@ class StoreApp(tk.Tk):
         ttk.Button(bar, text='Ver detalle',
                    command=self._detail_selected).pack(side='left', padx=8)
 
-        cols = ('numero', 'producto', 'cant', 'motivo', 'estado')
+        cols = ('numero', 'boleta', 'producto', 'cant', 'estado')
         self.ret_tree = ttk.Treeview(right, columns=cols, show='headings', height=8)
-        for c, t, w_ in [('numero', 'N.º', 95), ('producto', 'Producto', 105),
-                         ('cant', 'Cant.', 40), ('motivo', 'Motivo', 55),
-                         ('estado', 'Estado', 80)]:
+        for c, t, w_ in [('numero', 'Devol.', 68), ('boleta', 'Boleta', 78),
+                         ('producto', 'Producto', 100), ('cant', 'Cant.', 36),
+                         ('estado', 'Estado', 78)]:
             self.ret_tree.heading(c, text=t)
             self.ret_tree.column(c, width=w_, anchor='w' if c == 'producto' else 'center')
         self.ret_tree.tag_configure('PENDIENTE', background='#fff3cd')
@@ -1179,7 +1219,35 @@ class StoreApp(tk.Tk):
         self.ret_tree.bind('<Double-1>', lambda _: self._evaluate_selected())
 
         self._refresh_return_products()
+        self._refresh_return_sales()
         self.refresh_returns()
+
+    def _refresh_return_sales(self):
+        if not hasattr(self, 'ret_sale_tree'):
+            return
+        for x in self.ret_sale_tree.get_children():
+            self.ret_sale_tree.delete(x)
+        for x in self.ret_item_tree.get_children():
+            self.ret_item_tree.delete(x)
+        q = self.ret_sale_search.get().strip().upper()
+        for r in self.db.list_sales(100):
+            if r['status'] == 'ANULADA' or (q and q not in r['sale_number'].upper()):
+                continue
+            self.ret_sale_tree.insert('', 'end', iid=str(r['id']), values=(
+                r['sale_number'], r['date'][:16], self.money(r['total'])))
+
+    def _load_return_sale_items(self):
+        for x in self.ret_item_tree.get_children():
+            self.ret_item_tree.delete(x)
+        sel = self.ret_sale_tree.selection()
+        if not sel:
+            return
+        for it in self.db.sale_items_for_return(int(sel[0])):
+            self.ret_item_tree.insert(
+                '', 'end', iid=str(it['product_id']),
+                tags=('agotado',) if it['available'] <= 0 else (),
+                values=(it['name'], f"{it['quantity']:g}", f"{it['available']:g}",
+                        self.money(it['unit_price'])))
 
     def _refresh_return_products(self):
         if not hasattr(self, 'ret_prod_tree'):
@@ -1198,20 +1266,32 @@ class StoreApp(tk.Tk):
         flt = self.ret_filter.get()
         for r in self.db.list_returns('' if flt == 'TODAS' else flt):
             self.ret_tree.insert('', 'end', iid=str(r['id']), tags=(r['status'],), values=(
-                r['return_number'][4:], r['product_name'], f"{r['quantity']:g}",
-                'Venc.' if r['reason'] == 'VENCIMIENTO' else 'Daño', r['status']))
+                r['return_number'][-9:],
+                ('V' + r['sale_number'][-9:]) if r['sale_number'] else '— sin boleta',
+                r['product_name'], f"{r['quantity']:g}", r['status']))
 
     def _register_return(self):
-        sel = self.ret_prod_tree.selection()
+        con_boleta = self.ret_nb.index(self.ret_nb.select()) == 0
+        sale_id = None
+        if con_boleta:
+            ss = self.ret_sale_tree.selection()
+            if not ss:
+                return messagebox.showwarning('Devoluciones', 'Selecciona la boleta.')
+            sale_id = int(ss[0])
+            sel = self.ret_item_tree.selection()
+        else:
+            sel = self.ret_prod_tree.selection()
         if not sel:
             return messagebox.showwarning('Devoluciones', 'Selecciona el producto devuelto.')
         try:
             res = self.db.register_return(
                 int(sel[0]), self.ret_qty.get(), self.ret_reason.get(),
                 self.ret_expiry.get(), self.ret_desc.get('1.0', 'end'),
-                self.ret_customer.get())
+                self.ret_customer.get(), sale_id)
         except Exception as e:
             return messagebox.showerror('Devoluciones', str(e))
+        if sale_id:
+            self._load_return_sale_items()
         self.ret_desc.delete('1.0', 'end')
         self.ret_expiry.set('')
         self.ret_qty.set('1')
@@ -1220,6 +1300,13 @@ class StoreApp(tk.Tk):
             'Devolución registrada',
             f"{res['number']} quedó PENDIENTE de evaluación.\n"
             "El stock no se modifica hasta que la evalúes.")
+
+    def _boleta_text(self, r):
+        """Línea descriptiva de la boleta asociada a una devolución."""
+        if not r['sale_id']:
+            return 'Boleta: sin boleta (cliente sin comprobante)'
+        return (f"Boleta: {r['sale_number']} · {r['sale_date'][:16]} · "
+                f"{r['sale_payment']} · {self.money(r['sale_total'])}")
 
     def _selected_return(self):
         sel = self.ret_tree.selection()
@@ -1235,6 +1322,15 @@ class StoreApp(tk.Tk):
         r = self.db.get_return(rid)
         lines = [
             f"{r['return_number']} · {r['date']}",
+            self._boleta_text(r),
+        ]
+        if r['sale_id']:
+            lines.append('Productos entregados en la boleta:')
+            for it in self.db.get_sale_items(r['sale_id']):
+                marca = '  ◄ devuelto' if it['product_id'] == r['product_id'] else ''
+                lines.append(f"   • {it['quantity']:g} × {it['name']} "
+                             f"({self.money(it['unit_price'])}){marca}")
+        lines += [
             f"Producto: {r['product_name']} ({r['product_code']}) × {r['quantity']:g}",
             f"Motivo: {self.REASON_LABELS.get(r['reason'], r['reason'])}"
             + (f" · vence {r['expiry_date']}" if r['expiry_date'] else ''),
@@ -1284,14 +1380,28 @@ class StoreApp(tk.Tk):
         colR.grid(row=0, column=1, sticky='nsew', padx=(8, 0))
 
         # ---- Columna izquierda: datos, checklist, dictamen ----
-        venc = f"\nVence: {r['expiry_date']}" if r['expiry_date'] else ''
+        venc = f" · vence {r['expiry_date']}" if r['expiry_date'] else ''
         ttk.Label(
             colL, background='white', wraplength=340, justify='left',
-            text=(f"{r['product_name']} ({r['product_code']})\n"
-                  f"Cantidad: {r['quantity']:g} · Crédito: {self.money(r['credit_amount'])}\n"
+            text=(f"{self._boleta_text(r)}\n"
+                  f"Devuelve: {r['product_name']} × {r['quantity']:g} · "
+                  f"Crédito {self.money(r['credit_amount'])}\n"
                   f"Motivo: {self.REASON_LABELS.get(r['reason'], r['reason'])}{venc}\n"
                   f"Descripción: {r['description'] or '—'}"),
         ).pack(anchor='w')
+        if r['sale_id']:
+            ttk.Label(colL, text='Productos entregados en la boleta:', background='white',
+                      font=('Segoe UI', 9, 'bold')).pack(anchor='w', pady=(6, 2))
+            bt = ttk.Treeview(colL, columns=('p', 'q', 'pr'), show='headings', height=3,
+                              style='Mini.Treeview')
+            for c, t, w_ in [('p', 'Producto', 190), ('q', 'Cant.', 45), ('pr', 'P. pagado', 70)]:
+                bt.heading(c, text=t)
+                bt.column(c, width=w_, anchor='w' if c == 'p' else 'center')
+            bt.tag_configure('dev', background='#fff3cd')
+            for it in self.db.get_sale_items(r['sale_id']):
+                bt.insert('', 'end', tags=('dev',) if it['product_id'] == r['product_id'] else (),
+                          values=(it['name'], f"{it['quantity']:g}", self.money(it['unit_price'])))
+            bt.pack(fill='x')
         ttk.Separator(colL).pack(fill='x', pady=8)
 
         ttk.Label(colL, text='Checklist de revisión', background='white',
@@ -1307,22 +1417,30 @@ class StoreApp(tk.Tk):
 
         dictamen = tk.StringVar(value='APROBADA')
         resol = tk.StringVar(value='CAMBIO')
-        ttk.Label(colL, text='Dictamen', background='white',
-                  font=('Segoe UI', 10, 'bold')).pack(anchor='w')
-        ttk.Radiobutton(colL, style='Card.TRadiobutton', text='Aprobar (defecto confirmado)', value='APROBADA',
-                        variable=dictamen, command=lambda: toggle()).pack(anchor='w')
-        ttk.Radiobutton(colL, style='Card.TRadiobutton', text='Rechazar (el producto está bien)', value='RECHAZADA',
-                        variable=dictamen, command=lambda: toggle()).pack(anchor='w')
-        ttk.Label(colL, text='Resolución', background='white',
-                  font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8, 0))
-        rb1 = ttk.Radiobutton(colL, style='Card.TRadiobutton', text='Cambiar por otro producto', value='CAMBIO',
-                              variable=resol, command=lambda: toggle())
-        rb1.pack(anchor='w')
-        rb2 = ttk.Radiobutton(colL, style='Card.TRadiobutton', text='Reembolso en efectivo', value='REEMBOLSO',
-                              variable=resol, command=lambda: toggle())
-        rb2.pack(anchor='w')
+        dr = ttk.Frame(colL, style='Card.TFrame')
+        dr.pack(fill='x')
+        dr.columnconfigure(0, weight=1)
+        dr.columnconfigure(1, weight=1)
+        ttk.Label(dr, text='Dictamen', background='white',
+                  font=('Segoe UI', 10, 'bold')).grid(row=0, column=0, sticky='w')
+        ttk.Radiobutton(dr, text='Aprobar (defecto real)', value='APROBADA',
+                        style='Card.TRadiobutton', variable=dictamen,
+                        command=lambda: toggle()).grid(row=1, column=0, sticky='w')
+        ttk.Radiobutton(dr, text='Rechazar (está bien)', value='RECHAZADA',
+                        style='Card.TRadiobutton', variable=dictamen,
+                        command=lambda: toggle()).grid(row=2, column=0, sticky='w')
+        ttk.Label(dr, text='Resolución', background='white',
+                  font=('Segoe UI', 10, 'bold')).grid(row=0, column=1, sticky='w')
+        rb1 = ttk.Radiobutton(dr, text='Cambio por otro', value='CAMBIO',
+                              style='Card.TRadiobutton', variable=resol,
+                              command=lambda: toggle())
+        rb1.grid(row=1, column=1, sticky='w')
+        rb2 = ttk.Radiobutton(dr, text='Reembolso', value='REEMBOLSO',
+                              style='Card.TRadiobutton', variable=resol,
+                              command=lambda: toggle())
+        rb2.grid(row=2, column=1, sticky='w')
         ttk.Label(colL, text='Observaciones (obligatorio)', background='white',
-                  font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8, 2))
+                  font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(6, 2))
         notes = tk.Text(colL, height=3, width=30, font=('Segoe UI', 9), wrap='word')
         notes.pack(fill='both', expand=True)
 

@@ -192,5 +192,53 @@ class TestEvaluacion(Base):
         self.assertLessEqual(res['exchange_total'], 8.50)
 
 
+class TestConBoleta(Base):
+    def vender(self, items, metodo='EFECTIVO'):
+        cart = [{'product_id': pid, 'name': 'x', 'quantity': q, 'price': pr}
+                for pid, q, pr in items]
+        total = sum(q * pr for _, q, pr in items)
+        res = self.db.create_sale(cart, metodo, total)
+        return [s for s in self.db.list_sales() if s['sale_number'] == res['number']][0]['id']
+
+    def test_lista_productos_de_la_boleta(self):
+        sid = self.vender([(self.yogurt, 3, 6.80), (self.queso, 1, 8.50)])
+        items = self.db.sale_items_for_return(sid)
+        self.assertEqual({i['product_id'] for i in items}, {self.yogurt, self.queso})
+        self.assertTrue(all(i['available'] == i['quantity'] for i in items))
+
+    def test_devolucion_usa_precio_pagado_y_muestra_boleta(self):
+        sid = self.vender([(self.yogurt, 3, 5.00)])        # se vendió con descuento
+        r = self.db.register_return(self.yogurt, 2, 'VENCIMIENTO', fecha(-1), sale_id=sid)
+        d = self.db.get_return(r['id'])
+        self.assertEqual(d['credit_amount'], 10.00)         # 2 x 5.00, no 2 x 6.80
+        self.assertTrue(d['sale_number'])
+        self.assertEqual(self.db.list_returns()[0]['sale_number'], d['sale_number'])
+
+    def test_no_se_devuelve_mas_de_lo_vendido(self):
+        sid = self.vender([(self.yogurt, 2, 6.80)])
+        self.db.register_return(self.yogurt, 1, 'VENCIMIENTO', fecha(-1), sale_id=sid)
+        with self.assertRaises(ValueError):
+            self.db.register_return(self.yogurt, 2, 'VENCIMIENTO', fecha(-1), sale_id=sid)
+        self.db.register_return(self.yogurt, 1, 'VENCIMIENTO', fecha(-1), sale_id=sid)
+        self.assertEqual(self.db.sale_items_for_return(sid)[0]['available'], 0)
+
+    def test_rechazada_libera_cantidad(self):
+        sid = self.vender([(self.yogurt, 1, 6.80)])
+        r = self.db.register_return(self.yogurt, 1, 'MAL_ESTADO', '', 'x', sale_id=sid)
+        self.db.evaluate_return(r['id'], 'RECHAZADA', 'Está bien')
+        self.assertEqual(self.db.sale_items_for_return(sid)[0]['available'], 1)
+
+    def test_producto_ajeno_a_la_boleta(self):
+        sid = self.vender([(self.yogurt, 1, 6.80)])
+        with self.assertRaises(ValueError):
+            self.db.register_return(self.queso, 1, 'MAL_ESTADO', '', 'x', sale_id=sid)
+
+    def test_boleta_anulada_no_admite_devolucion(self):
+        sid = self.vender([(self.yogurt, 1, 6.80)])
+        self.db.void_sale(sid, 'error')
+        with self.assertRaises(ValueError):
+            self.db.register_return(self.yogurt, 1, 'MAL_ESTADO', '', 'x', sale_id=sid)
+
+
 if __name__ == '__main__':
     unittest.main()

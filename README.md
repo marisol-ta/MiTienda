@@ -164,8 +164,8 @@ Repositorio Git inicializado con commits lógicos:
 
 Pestaña **↩ Devoluciones**. El flujo tiene tres pasos y el stock solo cambia al evaluar:
 
-1. **Recibir**: se registra el producto devuelto con su motivo (`VENCIMIENTO` con fecha, o `MAL_ESTADO` con descripción). Queda `PENDIENTE` y no toca el stock.
-2. **Evaluar**: checklist de revisión (obligatorio para aprobar) y dictamen:
+1. **Recibir**: se elige la **boleta** (pestaña *Con boleta*: se ven todos los productos entregados y cuánto queda por devolver) o *Sin boleta* si el cliente no tiene comprobante. Con boleta, el crédito usa el precio realmente pagado y no se puede devolver más de lo vendido. Se registra el producto devuelto con su motivo (`VENCIMIENTO` con fecha, o `MAL_ESTADO` con descripción). Queda `PENDIENTE` y no toca el stock.
+2. **Evaluar**: el diálogo muestra la boleta y los productos que se entregaron (el devuelto resaltado). Checklist de revisión (obligatorio para aprobar) y dictamen:
    - **Rechazar**: el producto está bien; no cambia nada.
    - **Aprobar**: si el motivo es vencimiento, solo procede si la fecha ya pasó. El producto devuelto se registra como `MERMA` (no vuelve al stock).
 3. **Resolver** (si se aprueba):

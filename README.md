@@ -159,3 +159,31 @@ Repositorio Git inicializado con commits lógicos:
 - **Anular venta** (Ventas → *Historial / Anular venta*): exige un motivo, devuelve el stock de cada ítem, revierte el ingreso con un `EGRESO` en caja y marca la venta como `ANULADA` (no se borra, queda trazabilidad). Las ventas anuladas no cuentan en el panel ni en el resumen de caja, y una venta no puede anularse dos veces.
 - Las bases `tienda.db` creadas con versiones anteriores se actualizan solas al abrir la aplicación.
 - Pruebas: `python -m unittest tests.test_compras_anulacion`
+
+## Devoluciones (protocolo de revisión)
+
+Pestaña **↩ Devoluciones**. El flujo tiene tres pasos y el stock solo cambia al evaluar:
+
+1. **Recibir**: se registra el producto devuelto con su motivo (`VENCIMIENTO` con fecha, o `MAL_ESTADO` con descripción). Queda `PENDIENTE` y no toca el stock.
+2. **Evaluar**: checklist de revisión (obligatorio para aprobar) y dictamen:
+   - **Rechazar**: el producto está bien; no cambia nada.
+   - **Aprobar**: si el motivo es vencimiento, solo procede si la fecha ya pasó. El producto devuelto se registra como `MERMA` (no vuelve al stock).
+3. **Resolver** (si se aprueba):
+   - **Cambio**: se descuenta del stock el/los productos de reemplazo; la diferencia de precio se cobra (ingreso) o se devuelve (egreso) en caja.
+   - **Reembolso**: egreso en caja por el valor del producto.
+
+Todo ocurre en una transacción: si algo falla (p. ej. stock insuficiente) no se guarda nada.
+
+## Backtracking
+
+`algorithms.backtracking_cambio` busca la combinación de productos con stock cuyo total se acerque más al crédito de la devolución sin superarlo. Prueba cantidades por producto y retrocede al pasarse del crédito (con poda por cota). Se usa en el botón **Sugerir (backtracking)** de la evaluación y en la sección 6 de **Algoritmos**.
+
+## Catálogo de 15 productos
+
+Botón **Cargar 15 productos** (menú lateral): agrega 3 productos por categoría (Bebidas, Lácteos, Snacks y Dulces, Cuidado Personal, Cereales y Panadería). No duplica si ya existen.
+
+## Pruebas
+
+```
+python -m unittest discover -s tests -p "test_*.py"
+```

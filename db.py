@@ -14,6 +14,8 @@ Análisis de complejidad de las funciones principales (notación O grande):
   - desglosar_vuelto       : O(1)        — d denominaciones constantes
   - optimal_restock (DP)   : O(n · W)    — mochila 0/1
   - monte_carlo            : O(s · n)    — s simulaciones
+  - evaluate_return        : O(k log n)  — k productos de reemplazo
+  - sugerir_cambio (BT)    : O((m+1)^n)  — backtracking con poda
 """
 
 import sqlite3
@@ -30,6 +32,7 @@ from algorithms import (
     recursive_group_by_category,
     optimal_restock,
     monte_carlo_demand_simulation,
+    backtracking_cambio,
 )
 
 APP_DIR = Path.home() / "TiendaAbarrotesData"
@@ -129,6 +132,37 @@ class Database:
                 unit_cost REAL NOT NULL,
                 line_total REAL NOT NULL,
                 FOREIGN KEY(purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
+                FOREIGN KEY(product_id) REFERENCES products(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS returns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                return_number TEXT NOT NULL UNIQUE,
+                date TEXT NOT NULL,
+                product_id INTEGER NOT NULL,
+                quantity REAL NOT NULL,
+                unit_price REAL NOT NULL,
+                reason TEXT NOT NULL,
+                expiry_date TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                customer TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'PENDIENTE',
+                resolution TEXT NOT NULL DEFAULT '',
+                evaluation_notes TEXT DEFAULT '',
+                evaluated_at TEXT,
+                credit_amount REAL NOT NULL DEFAULT 0,
+                exchange_total REAL NOT NULL DEFAULT 0,
+                difference REAL NOT NULL DEFAULT 0,
+                FOREIGN KEY(product_id) REFERENCES products(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS return_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                return_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                quantity REAL NOT NULL,
+                unit_price REAL NOT NULL,
+                FOREIGN KEY(return_id) REFERENCES returns(id) ON DELETE CASCADE,
                 FOREIGN KEY(product_id) REFERENCES products(id)
             );
             ''')
@@ -568,6 +602,196 @@ class Database:
         }
 
     # ------------------------------------------------------------------
+    # DEVOLUCIONES (protocolo de revisión: registrar -> evaluar -> resolver)
+    # ------------------------------------------------------------------
+    RETURN_REASONS = ('VENCIMIENTO', 'MAL_ESTADO')
+
+    def next_return_number(self) -> str:
+        today = datetime.now().strftime('%Y%m%d')
+        with self.connect() as con:
+            n = con.execute(
+                "SELECT COUNT(*) n FROM returns WHERE return_number LIKE ?",
+                (f"DEV-{today}-%",)
+            ).fetchone()['n']
+        return f"DEV-{today}-{n + 1:04d}"
+
+    def register_return(self, product_id: int, quantity, reason: str,
+                        expiry_date: str = '', description: str = '',
+                        customer: str = ''):
+        """
+        PASO 1 del protocolo: recepción. Deja la devolución PENDIENTE.
+        No modifica el stock: el producto queda en revisión hasta evaluarlo.
+        """
+        qty = float(quantity)
+        if qty <= 0:
+            raise ValueError("La cantidad debe ser mayor que cero")
+        if reason not in self.RETURN_REASONS:
+            raise ValueError("Motivo no válido (VENCIMIENTO o MAL_ESTADO)")
+        expiry_date = (expiry_date or '').strip()
+        if reason == 'VENCIMIENTO' and not expiry_date:
+            raise ValueError("Indica la fecha de vencimiento (AAAA-MM-DD)")
+        if expiry_date:
+            try:
+                datetime.strptime(expiry_date, '%Y-%m-%d')
+            except ValueError:
+                raise ValueError("Fecha de vencimiento inválida. Usa AAAA-MM-DD")
+        if reason == 'MAL_ESTADO' and not (description or '').strip():
+            raise ValueError("Describe el daño o mal estado del producto")
+        p = self.get_product(product_id)
+        if not p or not p['active']:
+            raise ValueError("Producto no encontrado")
+        number = self.next_return_number()
+        with self.connect() as con:
+            cur = con.execute(
+                """INSERT INTO returns(return_number,date,product_id,quantity,unit_price,
+                   reason,expiry_date,description,customer,credit_amount)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (number, self.now(), product_id, qty, p['sale_price'], reason,
+                 expiry_date, (description or '').strip(), (customer or '').strip(),
+                 round(qty * float(p['sale_price']), 2))
+            )
+        return {'id': cur.lastrowid, 'number': number}
+
+    def list_returns(self, status: str = '', limit: int = 300):
+        q = ("SELECT r.*, p.name AS product_name, p.code AS product_code "
+             "FROM returns r JOIN products p ON p.id = r.product_id")
+        args = []
+        if status:
+            q += ' WHERE r.status=?'
+            args.append(status)
+        q += ' ORDER BY r.id DESC LIMIT ?'
+        args.append(limit)
+        with self.connect() as con:
+            return con.execute(q, args).fetchall()
+
+    def get_return(self, return_id: int):
+        with self.connect() as con:
+            return con.execute(
+                "SELECT r.*, p.name AS product_name, p.code AS product_code, "
+                "p.category AS product_category "
+                "FROM returns r JOIN products p ON p.id = r.product_id "
+                "WHERE r.id=?", (return_id,)
+            ).fetchone()
+
+    def get_return_items(self, return_id: int):
+        with self.connect() as con:
+            return con.execute(
+                "SELECT ri.*, p.name AS product_name FROM return_items ri "
+                "JOIN products p ON p.id = ri.product_id WHERE ri.return_id=?",
+                (return_id,)
+            ).fetchall()
+
+    def sugerir_cambio(self, return_id: int, misma_categoria: bool = True,
+                       max_unidades: int = 4) -> Dict:
+        """Backtracking: propone qué productos entregar a cambio de la devolución."""
+        r = self.get_return(return_id)
+        if not r:
+            raise ValueError("La devolución no existe")
+        cands = [dict(p) for p in self.list_products() if p['stock'] > 0]
+        if misma_categoria:
+            cands = [p for p in cands if p['category'] == r['product_category']]
+        return backtracking_cambio(cands, r['credit_amount'], max_unidades)
+
+    def evaluate_return(self, return_id: int, dictamen: str, notes: str,
+                        resolution: str = '', exchange_items: Optional[List[Dict]] = None):
+        """
+        PASO 2 del protocolo: evaluación (transacción atómica).
+          dictamen 'RECHAZADA' -> el producto no procede; no cambia el stock.
+          dictamen 'APROBADA'  -> se confirma el defecto:
+              - VENCIMIENTO: solo procede si la fecha de vencimiento ya pasó.
+              - El producto devuelto se registra como MERMA (NO vuelve al stock).
+              - resolution 'CAMBIO': descuenta el stock de los productos de
+                reemplazo y cobra/devuelve la diferencia en caja.
+              - resolution 'REEMBOLSO': egreso en caja por el crédito.
+        """
+        notes = (notes or '').strip()
+        if dictamen not in ('APROBADA', 'RECHAZADA'):
+            raise ValueError("Dictamen no válido")
+        if not notes:
+            raise ValueError("Escribe las observaciones de la revisión")
+        exchange_items = exchange_items or []
+        dt = self.now()
+        with self.connect() as con:
+            r = con.execute("SELECT * FROM returns WHERE id=?", (return_id,)).fetchone()
+            if not r:
+                raise ValueError("La devolución no existe")
+            if r['status'] != 'PENDIENTE':
+                raise ValueError(f"La devolución {r['return_number']} ya fue evaluada")
+            num = r['return_number']
+
+            if dictamen == 'RECHAZADA':
+                con.execute(
+                    "UPDATE returns SET status='RECHAZADA', resolution='NINGUNA', "
+                    "evaluation_notes=?, evaluated_at=? WHERE id=?",
+                    (notes, dt, return_id))
+                return {'number': num, 'status': 'RECHAZADA', 'difference': 0.0}
+
+            if resolution not in ('CAMBIO', 'REEMBOLSO'):
+                raise ValueError("Elige la resolución: CAMBIO o REEMBOLSO")
+            if r['reason'] == 'VENCIMIENTO':
+                hoy = datetime.now().strftime('%Y-%m-%d')
+                if not r['expiry_date'] or r['expiry_date'] >= hoy:
+                    raise ValueError(
+                        "El producto aún no está vencido (vence el "
+                        f"{r['expiry_date'] or '—'}). Debes rechazar la devolución.")
+            credit = round(float(r['quantity']) * float(r['unit_price']), 2)
+            exchange_total = 0.0
+            if resolution == 'CAMBIO':
+                if not exchange_items:
+                    raise ValueError("Selecciona al menos un producto de reemplazo")
+                merged: Dict[int, float] = {}
+                for it in exchange_items:
+                    q = float(it['qty'])
+                    if q <= 0:
+                        raise ValueError("Cantidad de reemplazo inválida")
+                    merged[int(it['id'])] = merged.get(int(it['id']), 0) + q
+                for pid, q in merged.items():
+                    p = con.execute(
+                        "SELECT * FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+                    if not p:
+                        raise ValueError("Producto de reemplazo no encontrado")
+                    if float(p['stock']) < q:
+                        raise ValueError(
+                            f"Stock insuficiente de {p['name']} (hay {p['stock']:g})")
+                    con.execute("UPDATE products SET stock=stock-? WHERE id=?", (q, pid))
+                    con.execute(
+                        "INSERT INTO stock_movements(date,product_id,type,quantity,note) "
+                        "VALUES(?,?,?,?,?)",
+                        (dt, pid, 'SALIDA', q, f"Cambio por devolución {num}"))
+                    con.execute(
+                        "INSERT INTO return_items(return_id,product_id,quantity,unit_price) "
+                        "VALUES(?,?,?,?)", (return_id, pid, q, p['sale_price']))
+                    exchange_total += q * float(p['sale_price'])
+                exchange_total = round(exchange_total, 2)
+            diff = (round(exchange_total - credit, 2) if resolution == 'CAMBIO'
+                    else round(-credit, 2))
+
+            # El producto devuelto (vencido / dañado) NO regresa al stock: merma
+            con.execute(
+                "INSERT INTO stock_movements(date,product_id,type,quantity,note) "
+                "VALUES(?,?,?,?,?)",
+                (dt, r['product_id'], 'MERMA', r['quantity'],
+                 f"Devolución {num} ({r['reason']}) — no reingresa al stock"))
+            if diff > 0:
+                con.execute(
+                    "INSERT INTO cash_movements(date,type,concept,amount,payment_method) "
+                    "VALUES(?,?,?,?,?)",
+                    (dt, 'INGRESO', f"Diferencia por cambio {num}", diff, 'EFECTIVO'))
+            elif diff < 0:
+                concepto = 'Reembolso' if resolution == 'REEMBOLSO' else 'Vuelto por cambio'
+                con.execute(
+                    "INSERT INTO cash_movements(date,type,concept,amount,payment_method) "
+                    "VALUES(?,?,?,?,?)",
+                    (dt, 'EGRESO', f"{concepto} {num}", -diff, 'EFECTIVO'))
+            con.execute(
+                "UPDATE returns SET status='APROBADA', resolution=?, evaluation_notes=?, "
+                "evaluated_at=?, credit_amount=?, exchange_total=?, difference=? WHERE id=?",
+                (resolution, notes, dt, credit, exchange_total, diff, return_id))
+        self._invalidate_cache()
+        return {'number': num, 'status': 'APROBADA', 'resolution': resolution,
+                'credit': credit, 'exchange_total': exchange_total, 'difference': diff}
+
+    # ------------------------------------------------------------------
     # ALGORITMOS AVANZADOS (expuestos para la UI)
     # ------------------------------------------------------------------
     def sugerir_reposicion(self, presupuesto: float) -> Dict:
@@ -614,6 +838,44 @@ class Database:
                 )
         self._invalidate_cache()
         return True
+
+    CATALOGO_15 = [
+        # (código, nombre, categoría, unidad, p. compra, p. venta, stock, stock mín.)
+        ('776001', 'Agua Mineral 625 ml', 'Bebidas', 'UND', 0.90, 1.50, 60, 12),
+        ('776002', 'Gaseosa Cola 1.5 L', 'Bebidas', 'UND', 4.20, 5.50, 36, 8),
+        ('776003', 'Jugo de Naranja 1 L', 'Bebidas', 'UND', 3.80, 5.00, 24, 6),
+        ('776004', 'Yogurt Vainilla 1 L', 'Lácteos', 'UND', 5.20, 6.80, 20, 6),
+        ('776005', 'Queso Fresco 250 g', 'Lácteos', 'UND', 6.50, 8.50, 15, 4),
+        ('776006', 'Mantequilla 200 g', 'Lácteos', 'UND', 5.00, 6.50, 18, 4),
+        ('776007', 'Papas Fritas 120 g', 'Snacks y Dulces', 'UND', 2.20, 3.00, 40, 10),
+        ('776008', 'Chocolate en Barra 90 g', 'Snacks y Dulces', 'UND', 2.80, 3.80, 30, 8),
+        ('776009', 'Galletas Rellenas Pack 6', 'Snacks y Dulces', 'UND', 2.00, 2.80, 45, 10),
+        ('776010', 'Shampoo 400 ml', 'Cuidado Personal', 'UND', 9.50, 12.50, 14, 4),
+        ('776011', 'Pasta Dental 100 g', 'Cuidado Personal', 'UND', 3.60, 5.00, 25, 6),
+        ('776012', 'Papel Higiénico x4', 'Cuidado Personal', 'UND', 4.50, 6.00, 30, 8),
+        ('776013', 'Avena en Hojuelas 400 g', 'Cereales y Panadería', 'UND', 3.00, 4.20, 28, 6),
+        ('776014', 'Pan de Molde Grande', 'Cereales y Panadería', 'UND', 6.20, 8.00, 16, 5),
+        ('776015', 'Cereal de Maíz 300 g', 'Cereales y Panadería', 'UND', 5.40, 7.20, 20, 5),
+    ]
+
+    def seed_catalog_15(self) -> int:
+        """Agrega 15 productos (3 por categoría). Idempotente: omite códigos existentes."""
+        added = 0
+        with self.connect() as con:
+            for row in self.CATALOGO_15:
+                if con.execute("SELECT 1 FROM products WHERE code=?", (row[0],)).fetchone():
+                    continue
+                cur = con.execute(
+                    "INSERT INTO products(code,name,category,unit,purchase_price,"
+                    "sale_price,stock,min_stock) VALUES(?,?,?,?,?,?,?,?)", row)
+                con.execute(
+                    "INSERT INTO stock_movements(date,product_id,type,quantity,note) "
+                    "VALUES(?,?,?,?,?)",
+                    (self.now(), cur.lastrowid, 'ENTRADA', row[6],
+                     'Catálogo inicial por categoría'))
+                added += 1
+        self._invalidate_cache()
+        return added
 
     @staticmethod
     def now():

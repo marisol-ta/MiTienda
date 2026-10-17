@@ -6,6 +6,7 @@ Contiene implementaciones propias de:
   - Recursividad
   - Programación dinámica (mochila 0/1)
   - Algoritmo probabilista (Monte Carlo)
+  - Backtracking (combinación de productos de reemplazo)
   - Utilidad paralela (hilo para reporte)
 
 Cada función documenta su complejidad temporal en notación O grande.
@@ -147,6 +148,81 @@ def recursive_group_by_category(productos: List[Any], index: int = 0, grupos: Op
         grupos[cat] = []
     grupos[cat].append(p)
     return recursive_group_by_category(productos, index + 1, grupos)
+
+
+# ---------------------------------------------------------------------------
+# BACKTRACKING – Combinación de productos para cambiar una devolución
+# Complejidad: O((m+1)^n) en el peor caso (n productos, hasta m unidades c/u);
+# la poda (crédito excedido, límite de unidades y cota superior) reduce el
+# espacio de búsqueda en la práctica.
+# ---------------------------------------------------------------------------
+def backtracking_cambio(
+    candidatos: List[Dict],
+    credito: float,
+    max_unidades: int = 4,
+    max_por_producto: int = 3,
+) -> Dict[str, Any]:
+    """
+    Busca, con backtracking, la combinación de productos (con su cantidad) cuyo
+    valor total se acerque lo más posible al crédito de la devolución SIN
+    superarlo. En empate prefiere menos unidades.
+
+    candidatos: [{'id', 'name', 'sale_price', 'stock', ...}]
+    Devuelve {'items': [{'id','name','qty','price'}], 'total', 'diferencia', 'nodos'}.
+    Para cada producto se prueba cada cantidad posible (decisión) y se
+    retrocede (backtrack) al explorar la siguiente alternativa.
+    """
+    credito_c = int(round(float(credito) * 100))
+    prods = []
+    for c in candidatos:
+        precio = int(round(float(c['sale_price']) * 100))
+        stock = int(float(c['stock']))
+        if precio > 0 and stock > 0 and precio <= credito_c:
+            prods.append((precio, min(stock, max_por_producto), c))
+    prods.sort(key=lambda t: -t[0])          # precios altos primero: poda más rápida
+    n = len(prods)
+    # Cota superior: lo máximo que aún podría sumarse desde el índice i
+    suf = [0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        suf[i] = suf[i + 1] + prods[i][0] * prods[i][1]
+
+    mejor = {'total': 0, 'unidades': 0, 'sel': []}
+    nodos = [0]
+    sel: List[Tuple[int, int]] = []          # (índice, cantidad)
+
+    def explorar(i: int, total: int, unidades: int):
+        nodos[0] += 1
+        if (total, -unidades) > (mejor['total'], -mejor['unidades']):
+            mejor.update(total=total, unidades=unidades, sel=list(sel))
+        if i == n or total == credito_c and unidades >= mejor['unidades']:
+            return
+        # Poda por cota: ni sumando todo lo restante se mejora lo ya encontrado
+        if total + suf[i] <= mejor['total']:
+            return
+        precio, tope, _ = prods[i]
+        for q in range(min(tope, max_unidades - unidades), -1, -1):
+            nuevo = total + precio * q
+            if nuevo > credito_c:            # Poda: excede el crédito
+                continue
+            if q:
+                sel.append((i, q))
+            explorar(i + 1, nuevo, unidades + q)
+            if q:
+                sel.pop()                    # BACKTRACK: deshacer la decisión
+
+    explorar(0, 0, 0)
+    items = [
+        {'id': prods[i][2]['id'], 'name': prods[i][2]['name'],
+         'qty': q, 'price': prods[i][0] / 100}
+        for i, q in mejor['sel']
+    ]
+    total = mejor['total'] / 100
+    return {
+        'items': items,
+        'total': total,
+        'diferencia': round(float(credito) - total, 2),
+        'nodos': nodos[0],
+    }
 
 
 # ---------------------------------------------------------------------------
